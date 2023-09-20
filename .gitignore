@@ -19,3 +19,8 @@
 
 # Go workspace file
 go.work
+
+#workspaces for editors
+*.code-workspace
+*.sublime-project
+*.sublime-workspace
