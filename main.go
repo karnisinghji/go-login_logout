@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"html/template"
 	"log"
 	"net/http"
 	"net/url"
@@ -28,18 +29,19 @@ type customClaims struct {
 var db = map[string]user{}
 var sessions = map[string]string{}
 
-//var tpl *template.Template
+var tpl *template.Template
 
 var key = []byte("the sucess of mine is the blessing of my Guruji shri shri 1008 ShriNiwas Prasad Sir")
 
-/* func init() {
+func init() {
 	tpl = template.Must(template.ParseGlob("tmp/*"))
-} */
+}
 
 func main() {
 	http.HandleFunc("/", Index)
 	http.HandleFunc("/register", Register)
 	http.HandleFunc("/login", Login)
+	http.HandleFunc("/logout", logout)
 	http.ListenAndServe(":8080", nil)
 }
 
@@ -88,20 +90,20 @@ func Index(w http.ResponseWriter, r *http.Request) {
 		<h2><b>Registration </h2>
 		<label for="first">First</label>
 		First<input type="text" name="first" id="first" placeholder="first">
-
 			Email<input type="email" name="e">
 			Password<input type="password" name="p">
 			<input type="submit">
-		</form>
-	
+		</form>	
 		 <form action="login" method="post">
 		<h2><b>Log In </h2>
 			Email<input type="email" name="e">
 			Password<input type="password" name="p">
-			<input type="submit">
-	
+			<input type="submit">	
 		</form>
-		
+		<h1>Logout</h1>
+		<form actioon="/logout" method="POST">
+		<input type="submit" vale="logout">
+		</form>
 	</body>
 	</html>`, f, e, msg)
 
@@ -203,7 +205,9 @@ func Login(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &c)
 
 	msg := url.QueryEscape("you logged in " + e)
-	http.Redirect(w, r, "/?msg="+msg, http.StatusSeeOther)
+	//http.Redirect(w, r, "/?msg="+msg, http.StatusSeeOther)
+	fmt.Fprintf(w,``)
+	tpl.ExecuteTemplate(w, "welcome.html", msg)
 }
 
 func createToken(sid string) (string, error) {
@@ -254,6 +258,8 @@ func logout(w http.ResponseWriter, r *http.Request) {
 			Name:  "sessionID",
 			Value: "",
 		}
+		fmt.Println("cookie value in logout ",c.Value)
+
 	}
 	sID, err := parseToken(c.Value)
 	if err != nil {
@@ -263,5 +269,7 @@ func logout(w http.ResponseWriter, r *http.Request) {
 	delete(sessions, sID)
 	c.MaxAge = -1
 	http.SetCookie(w, c)
+	fmt.Println("cookie value in logoutafter deletasion ",c.Value)
+
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
