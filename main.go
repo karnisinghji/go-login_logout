@@ -1,25 +1,31 @@
 package main
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/base64"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"net/url"
-	"strings"
+	"time"
 
+	"github.com/dgrijalva/jwt-go"
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 )
 
-type person struct {
-	First string
+type user struct {
+	Password []byte
+	First    string
+}
+type customClaims struct {
+	jwt.StandardClaims
+	SID string
 }
 
 // key is email , value is password
-var db = map[string][]byte{}
+//new :key is email , value is user
+
+var db = map[string]user{}
 var sessions = map[string]string{}
 
 //var tpl *template.Template
@@ -46,13 +52,18 @@ func Index(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	s, err := parseToken(c.Value)
+	SID, err := parseToken(c.Value)
 	if err != nil {
 		log.Println("index parseToken ", err)
 	}
 	var e string
-	if s != "" {
-		e = sessions[s]
+	if SID != "" {
+		e = sessions[SID]
+	}
+
+	var f string
+	if user, ok := db[e]; ok {
+		f = user.First
 	}
 
 	/* r.ParseForm()
@@ -70,9 +81,14 @@ func Index(w http.ResponseWriter, r *http.Request) {
 		<script src='main.js'></script>
 	</head>
 	<body>
+	<h2>IF YOU HAVE A SESSION , HERE IS YOUR NAME : %S</h2>
+	<h2>IF YOU HAVE A SESSION , HERE IS YOUR EMAIL : %S</h2>
 	<h2>If THERE WAS ANY ERROR , HERE IT IS : %s</h1>
 		<form action="register" method="post">
 		<h2><b>Registration </h2>
+		<label for="first">First</label>
+		First<input type="text" name="first" id="first" placeholder="first">
+
 			Email<input type="email" name="e">
 			Password<input type="password" name="p">
 			<input type="submit">
@@ -87,7 +103,7 @@ func Index(w http.ResponseWriter, r *http.Request) {
 		</form>
 		
 	</body>
-	</html>`, e, msg)
+	</html>`, f, e, msg)
 
 }
 
@@ -112,6 +128,13 @@ func Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	f := r.FormValue("first")
+	if f == "" {
+		msg := url.QueryEscape("your first name to not be empty")
+		http.Redirect(w, r, "/?msg="+msg, http.StatusSeeOther)
+		return
+	}
+
 	bsp, err := bcrypt.GenerateFromPassword([]byte(p), bcrypt.DefaultCost)
 	if err != nil {
 		msg := url.QueryEscape("there are an internal server error.--")
@@ -121,7 +144,10 @@ func Register(w http.ResponseWriter, r *http.Request) {
 
 	log.Println("Password :->", p)
 	log.Println("bcrypted password :->", bsp)
-	db[e] = bsp
+	db[e] = user{
+		Password: bsp,
+		First:    f,
+	}
 
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
@@ -153,7 +179,7 @@ func Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := bcrypt.CompareHashAndPassword((db[e]), []byte(p))
+	err := bcrypt.CompareHashAndPassword((db[e].Password), []byte(p))
 	if err != nil {
 		msg := url.QueryEscape("your email and password did't match")
 		http.Redirect(w, r, "/?msg="+msg, http.StatusSeeOther)
@@ -162,7 +188,13 @@ func Login(w http.ResponseWriter, r *http.Request) {
 
 	sUUID := uuid.New().String()
 	sessions[sUUID] = e
-	token := createToken(sUUID)
+	token, err := createToken(sUUID)
+	if err != nil {
+		log.Println("couldn't createToken in Login ", err)
+		msg := url.QueryEscape("our server didn't get response at this time, plz try after some time")
+		http.Redirect(w, r, "/?msg="+msg, http.StatusSeeOther)
+		return
+	}
 
 	c := http.Cookie{
 		Name:  "sessionID",
@@ -174,40 +206,62 @@ func Login(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/?msg="+msg, http.StatusSeeOther)
 }
 
-func createToken(sid string) string {
-	mac := hmac.New(sha256.New, key)
-	mac.Write([]byte(sid))
+func createToken(sid string) (string, error) {
 
-	// to get in hex
-	// signedMac := fmt.Sprintf("%x" , mac.Sum(nil))
+	cc := customClaims{
+		StandardClaims: jwt.StandardClaims{
+			ExpiresAt: time.Now().Add(5 * time.Minute).Unix(),
+		},
+		SID: sid,
+	}
 
-	// to base 64
-	signedMac := base64.StdEncoding.EncodeToString(mac.Sum(nil))
-
-	// signedSessionId as base64  |  created from sid
-	return signedMac + "|" + sid
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, cc)
+	st, err := token.SignedString(key)
+	if err != nil {
+		return "", fmt.Errorf("could't sign token in createToken %w", err)
+	}
+	return st, nil
 }
 
-func parseToken(ss string) (string, error) {
-	xs := strings.SplitN(ss, "|", 2)
-	if len(xs) != 2 {
-		return "", fmt.Errorf("wrong number of item in string parseToken")
-	}
+func parseToken(st string) (string, error) {
 
-	// signedSession as base64 | created from sid
-	b64 := xs[0]
-	xb, err := base64.StdEncoding.DecodeString(b64)
+	token, err := jwt.ParseWithClaims(st, &customClaims{}, func(t *jwt.Token) (interface{}, error) {
+		if t.Method.Alg() != jwt.SigningMethodHS256.Alg() {
+			return nil, errors.New("parseWithClaims different algorithms used")
+		}
+		return key, nil
+	})
 	if err != nil {
-		return "", fmt.Errorf("couldn't parseToken decodestring %w", err)
+		return "", fmt.Errorf("couldn't ParsewithClaims in parseToken %w", err)
 	}
 
-	// SIGNEDSESSIONID AS BASE64 |CREATED FORM SID
-	mac := hmac.New(sha256.New, key)
-	mac.Write([]byte(xs[1]))
-
-	ok := hmac.Equal(xb, mac.Sum(nil))
-	if !ok {
-		return "", fmt.Errorf("couldn't parseToken not equal signed sid and sid")
+	if !token.Valid {
+		return "", fmt.Errorf("token not valid in parseToken")
 	}
-	return xs[1], nil
+
+	return token.Claims.(*customClaims).SID, nil
+}
+
+func logout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+
+	c, err := r.Cookie("sessionID")
+	if err != nil {
+		c = &http.Cookie{
+			Name:  "sessionID",
+			Value: "",
+		}
+	}
+	sID, err := parseToken(c.Value)
+	if err != nil {
+		log.Println("index parseToken ", err)
+	}
+
+	delete(sessions, sID)
+	c.MaxAge = -1
+	http.SetCookie(w, c)
+	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
